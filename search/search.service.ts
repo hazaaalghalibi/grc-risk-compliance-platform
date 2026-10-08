@@ -1,345 +1,315 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { 
-  GlobalSearchDto, 
-  SearchResultDto, 
-  SearchResultItemDto, 
-  SearchEntityType,
-} from './dto/search.dto';
+import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
+import { PRISMA_SERVICE } from './search.module';
+
+export interface SearchResult {
+  type: 'control' | 'framework' | 'policy' | 'evidence' | 'integration' | 'risk' | 'vendor' | 'audit' | 'user' | 'asset';
+  id: string;
+  title: string;
+  subtitle?: string;
+  path: string;
+}
+
+// Prisma model delegate interface for search operations
+interface PrismaModelDelegate {
+  findMany: (args: { 
+    where?: Record<string, unknown>; 
+    take?: number; 
+    select?: Record<string, boolean>; 
+  }) => Promise<Record<string, unknown>[]>;
+}
+
+// PrismaService type - each service provides their own implementation
+export interface IPrismaService {
+  control?: PrismaModelDelegate;
+  framework?: PrismaModelDelegate;
+  policy?: PrismaModelDelegate;
+  evidence?: PrismaModelDelegate;
+  integration?: PrismaModelDelegate;
+  risk?: PrismaModelDelegate;
+  vendor?: PrismaModelDelegate;
+  audit?: PrismaModelDelegate;
+  user?: PrismaModelDelegate;
+  asset?: PrismaModelDelegate;
+}
 
 @Injectable()
 export class SearchService {
   private readonly logger = new Logger(SearchService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
-
-  async globalSearch(
-    organizationId: string,
-    dto: GlobalSearchDto,
-  ): Promise<SearchResultDto> {
-    const startTime = Date.now();
-    const { query, entityTypes, page = 1, limit = 20 } = dto;
-    const offset = (page - 1) * limit;
-
-    const searchTerm = query.toLowerCase().trim();
-    if (!searchTerm) {
-      return {
-        total: 0,
-        page,
-        limit,
-        query,
-        results: [],
-        took: Date.now() - startTime,
-      };
+  constructor(
+    @Optional() @Inject(PRISMA_SERVICE) private prisma: IPrismaService,
+  ) {
+    if (!prisma) {
+      this.logger.warn('SearchService initialized without PrismaService - search functionality will be limited');
     }
-
-    const typesToSearch = entityTypes?.length 
-      ? entityTypes 
-      : Object.values(SearchEntityType);
-
-    const searchPromises: Promise<SearchResultItemDto[]>[] = [];
-
-    if (typesToSearch.includes(SearchEntityType.Control)) {
-      searchPromises.push(this.searchControls(organizationId, searchTerm, limit));
-    }
-
-    if (typesToSearch.includes(SearchEntityType.Policy)) {
-      searchPromises.push(this.searchPolicies(organizationId, searchTerm, limit));
-    }
-
-    if (typesToSearch.includes(SearchEntityType.Risk)) {
-      searchPromises.push(this.searchRisks(organizationId, searchTerm, limit));
-    }
-
-    if (typesToSearch.includes(SearchEntityType.Evidence)) {
-      searchPromises.push(this.searchEvidence(organizationId, searchTerm, limit));
-    }
-
-    if (typesToSearch.includes(SearchEntityType.Task)) {
-      searchPromises.push(this.searchTasks(organizationId, searchTerm, limit));
-    }
-
-    if (typesToSearch.includes(SearchEntityType.Framework)) {
-      searchPromises.push(this.searchFrameworks(organizationId, searchTerm, limit));
-    }
-
-    const resultsArrays = await Promise.all(searchPromises);
-    const allResults = resultsArrays.flat();
-
-    // Sort by relevance
-    allResults.sort((a, b) => {
-      const aScore = this.getRelevanceScore(a, searchTerm);
-      const bScore = this.getRelevanceScore(b, searchTerm);
-      return bScore - aScore;
-    });
-
-    const paginatedResults = allResults.slice(offset, offset + limit);
-
-    return {
-      total: allResults.length,
-      page,
-      limit,
-      query,
-      results: paginatedResults,
-      took: Date.now() - startTime,
-    };
   }
 
-  private getRelevanceScore(item: SearchResultItemDto, searchTerm: string): number {
-    let score = 0;
-    const term = searchTerm.toLowerCase();
+  async searchAll(query: string): Promise<SearchResult[]> {
+    if (!this.prisma) {
+      this.logger.warn('Search called without PrismaService - returning empty results');
+      return [];
+    }
 
-    if (item.title.toLowerCase() === term) score += 100;
-    else if (item.title.toLowerCase().startsWith(term)) score += 50;
-    else if (item.title.toLowerCase().includes(term)) score += 25;
+    const results: SearchResult[] = [];
 
-    if (item.identifier?.toLowerCase().includes(term)) score += 30;
-    if (item.category?.toLowerCase().includes(term)) score += 10;
-    if (item.tags?.some(t => t.toLowerCase().includes(term))) score += 15;
-
-    return score;
-  }
-
-  private async searchControls(
-    organizationId: string,
-    searchTerm: string,
-    limit: number,
-  ): Promise<SearchResultItemDto[]> {
-    const controls = await this.prisma.control.findMany({
-      where: {
-        AND: [
-          {
+    try {
+      // Search Controls
+      if (this.prisma.control) {
+        const controls = await this.prisma.control.findMany({
+          where: {
+            deletedAt: null,
             OR: [
-              { organizationId: null },
-              { organizationId },
+              { controlId: { contains: query, mode: 'insensitive' } },
+              { title: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
             ],
           },
-          { deletedAt: null },
-          {
+          take: 5,
+          select: { id: true, controlId: true, title: true, description: true },
+        });
+
+        results.push(
+          ...controls.map((c) => ({
+            type: 'control' as const,
+            id: c.id as string,
+            title: `${c.controlId}: ${c.title}`,
+            subtitle: (c.description as string | undefined)?.substring(0, 100),
+            path: `/controls/${c.id}`,
+          }))
+        );
+      }
+
+      // Search Frameworks
+      if (this.prisma.framework) {
+        const frameworks = await this.prisma.framework.findMany({
+          where: {
             OR: [
-              { title: { contains: searchTerm, mode: 'insensitive' } },
-              { controlId: { contains: searchTerm, mode: 'insensitive' } },
-              { description: { contains: searchTerm, mode: 'insensitive' } },
+              { name: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
             ],
           },
-        ],
-      },
-      select: {
-        id: true,
-        controlId: true,
-        title: true,
-        description: true,
-        category: true,
-        tags: true,
-      },
-      take: limit,
-    });
+          take: 5,
+          select: { id: true, name: true, description: true, version: true },
+        });
 
-    return controls.map(c => ({
-      id: c.id,
-      entityType: SearchEntityType.Control,
-      title: c.title,
-      description: c.description?.substring(0, 200),
-      identifier: c.controlId,
-      category: c.category,
-      tags: c.tags,
-      matchedField: this.getMatchedField(c, searchTerm),
-      url: `/controls/${c.id}`,
-    }));
-  }
+        results.push(
+          ...frameworks.map((f) => ({
+            type: 'framework' as const,
+            id: f.id as string,
+            title: f.name as string,
+            subtitle: f.version ? `Version ${f.version}` : (f.description as string | undefined)?.substring(0, 100),
+            path: `/frameworks/${f.id}`,
+          }))
+        );
+      }
 
-  private async searchPolicies(
-    organizationId: string,
-    searchTerm: string,
-    limit: number,
-  ): Promise<SearchResultItemDto[]> {
-    const policies = await this.prisma.policy.findMany({
-      where: {
-        organizationId,
-        deletedAt: null,
-        OR: [
-          { title: { contains: searchTerm, mode: 'insensitive' } },
-          { description: { contains: searchTerm, mode: 'insensitive' } },
-        ],
-      },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        category: true,
-        tags: true,
-      },
-      take: limit,
-    });
+      // Search Policies
+      if (this.prisma.policy) {
+        const policies = await this.prisma.policy.findMany({
+          where: {
+            deletedAt: null,
+            OR: [
+              { title: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, title: true, description: true, status: true },
+        });
 
-    return policies.map(p => ({
-      id: p.id,
-      entityType: SearchEntityType.Policy,
-      title: p.title,
-      description: p.description?.substring(0, 200),
-      category: p.category,
-      tags: p.tags,
-      matchedField: this.getMatchedField(p, searchTerm),
-      url: `/policies/${p.id}`,
-    }));
-  }
+        results.push(
+          ...policies.map((p) => ({
+            type: 'policy' as const,
+            id: p.id as string,
+            title: p.title as string,
+            subtitle: p.status as string | undefined,
+            path: `/policies`,
+          }))
+        );
+      }
 
-  private async searchRisks(
-    organizationId: string,
-    searchTerm: string,
-    limit: number,
-  ): Promise<SearchResultItemDto[]> {
-    const risks = await this.prisma.risk.findMany({
-      where: {
-        organizationId,
-        deletedAt: null,
-        OR: [
-          { title: { contains: searchTerm, mode: 'insensitive' } },
-          { riskId: { contains: searchTerm, mode: 'insensitive' } },
-          { description: { contains: searchTerm, mode: 'insensitive' } },
-        ],
-      },
-      select: {
-        id: true,
-        riskId: true,
-        title: true,
-        description: true,
-        category: true,
-        tags: true,
-      },
-      take: limit,
-    });
+      // Search Evidence
+      if (this.prisma.evidence) {
+        const evidence = await this.prisma.evidence.findMany({
+          where: {
+            deletedAt: null,
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, name: true, description: true, fileType: true },
+        });
 
-    return risks.map(r => ({
-      id: r.id,
-      entityType: SearchEntityType.Risk,
-      title: r.title,
-      description: r.description?.substring(0, 200),
-      identifier: r.riskId,
-      category: r.category,
-      tags: r.tags,
-      matchedField: this.getMatchedField(r, searchTerm),
-      url: `/risks/${r.id}`,
-    }));
-  }
+        results.push(
+          ...evidence.map((e) => ({
+            type: 'evidence' as const,
+            id: e.id as string,
+            title: e.name as string,
+            subtitle: (e.fileType as string | undefined) || (e.description as string | undefined)?.substring(0, 100),
+            path: `/evidence`,
+          }))
+        );
+      }
 
-  private async searchEvidence(
-    organizationId: string,
-    searchTerm: string,
-    limit: number,
-  ): Promise<SearchResultItemDto[]> {
-    const evidence = await this.prisma.evidence.findMany({
-      where: {
-        organizationId,
-        deletedAt: null,
-        OR: [
-          { title: { contains: searchTerm, mode: 'insensitive' } },
-          { description: { contains: searchTerm, mode: 'insensitive' } },
-        ],
-      },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        type: true,
-        tags: true,
-      },
-      take: limit,
-    });
+      // Search Integrations
+      if (this.prisma.integration) {
+        const integrations = await this.prisma.integration.findMany({
+          where: {
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { type: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, name: true, type: true, status: true },
+        });
 
-    return evidence.map(e => ({
-      id: e.id,
-      entityType: SearchEntityType.Evidence,
-      title: e.title,
-      description: e.description?.substring(0, 200),
-      category: e.type,
-      tags: e.tags,
-      matchedField: this.getMatchedField({ title: e.title, description: e.description }, searchTerm),
-      url: `/evidence/${e.id}`,
-    }));
-  }
+        results.push(
+          ...integrations.map((i) => ({
+            type: 'integration' as const,
+            id: i.id as string,
+            title: i.name as string,
+            subtitle: `${i.type} - ${i.status}`,
+            path: `/integrations`,
+          }))
+        );
+      }
 
-  private async searchTasks(
-    organizationId: string,
-    searchTerm: string,
-    limit: number,
-  ): Promise<SearchResultItemDto[]> {
-    const tasks = await this.prisma.task.findMany({
-      where: {
-        organizationId,
-        OR: [
-          { title: { contains: searchTerm, mode: 'insensitive' } },
-          { description: { contains: searchTerm, mode: 'insensitive' } },
-        ],
-      },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        entityType: true,
-        status: true,
-      },
-      take: limit,
-    });
+      // Search Risks
+      if (this.prisma.risk) {
+        const risks = await this.prisma.risk.findMany({
+          where: {
+            deletedAt: null,
+            OR: [
+              { title: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, title: true, description: true, riskLevel: true },
+        });
 
-    return tasks.map(t => ({
-      id: t.id,
-      entityType: SearchEntityType.Task,
-      title: t.title,
-      description: t.description?.substring(0, 200),
-      category: t.entityType,
-      matchedField: this.getMatchedField(t, searchTerm),
-      url: `/tasks/${t.id}`,
-    }));
-  }
+        results.push(
+          ...risks.map((r) => ({
+            type: 'risk' as const,
+            id: r.id as string,
+            title: r.title as string,
+            subtitle: `${r.riskLevel} risk`,
+            path: `/risks/${r.id}`,
+          }))
+        );
+      }
 
-  private async searchFrameworks(
-    organizationId: string,
-    searchTerm: string,
-    limit: number,
-  ): Promise<SearchResultItemDto[]> {
-    const frameworks = await this.prisma.framework.findMany({
-      where: {
-        OR: [
-          { organizationId: null },
-          { organizationId },
-        ],
-        AND: {
-          OR: [
-            { name: { contains: searchTerm, mode: 'insensitive' } },
-            { type: { contains: searchTerm, mode: 'insensitive' } },
-            { description: { contains: searchTerm, mode: 'insensitive' } },
-          ],
-        },
-      },
-      select: {
-        id: true,
-        name: true,
-        type: true,
-        description: true,
-      },
-      take: limit,
-    });
+      // Search Vendors
+      if (this.prisma.vendor) {
+        const vendors = await this.prisma.vendor.findMany({
+          where: {
+            deletedAt: null,
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, name: true, description: true, tier: true },
+        });
 
-    return frameworks.map(f => ({
-      id: f.id,
-      entityType: SearchEntityType.Framework,
-      title: f.name,
-      description: f.description?.substring(0, 200),
-      identifier: f.type,
-      category: f.type,
-      matchedField: this.getMatchedField({ title: f.name, description: f.description }, searchTerm),
-      url: `/frameworks/${f.id}`,
-    }));
-  }
+        results.push(
+          ...vendors.map((v) => ({
+            type: 'vendor' as const,
+            id: v.id as string,
+            title: v.name as string,
+            subtitle: v.tier ? `Tier ${v.tier}` : (v.description as string | undefined)?.substring(0, 100),
+            path: `/vendors/${v.id}`,
+          }))
+        );
+      }
 
-  private getMatchedField(item: Record<string, unknown>, searchTerm: string): string {
-    const term = searchTerm.toLowerCase();
-    if ((item.controlId as string | undefined)?.toLowerCase().includes(term)) return 'controlId';
-    if ((item.riskId as string | undefined)?.toLowerCase().includes(term)) return 'riskId';
-    if ((item.title as string | undefined)?.toLowerCase().includes(term)) return 'title';
-    if ((item.description as string | undefined)?.toLowerCase().includes(term)) return 'description';
-    if ((item.tags as string[] | undefined)?.some((t: string) => t.toLowerCase().includes(term))) return 'tags';
-    return 'content';
+      // Search Audits
+      if (this.prisma.audit) {
+        const audits = await this.prisma.audit.findMany({
+          where: {
+            OR: [
+              { title: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, title: true, description: true, status: true },
+        });
+
+        results.push(
+          ...audits.map((a) => ({
+            type: 'audit' as const,
+            id: a.id as string,
+            title: a.title as string,
+            subtitle: a.status as string | undefined,
+            path: `/audits/${a.id}`,
+          }))
+        );
+      }
+
+      // Search Users
+      if (this.prisma.user) {
+        const users = await this.prisma.user.findMany({
+          where: {
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { email: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, name: true, email: true, role: true },
+        });
+
+        results.push(
+          ...users.map((u) => ({
+            type: 'user' as const,
+            id: u.id as string,
+            title: u.name as string,
+            subtitle: u.email as string | undefined,
+            path: `/users`,
+          }))
+        );
+      }
+
+      // Search Assets
+      if (this.prisma.asset) {
+        const assets = await this.prisma.asset.findMany({
+          where: {
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { description: { contains: query, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+          select: { id: true, name: true, description: true, type: true },
+        });
+
+        results.push(
+          ...assets.map((a) => ({
+            type: 'asset' as const,
+            id: a.id as string,
+            title: a.name as string,
+            subtitle: (a.type as string | undefined) || (a.description as string | undefined)?.substring(0, 100),
+            path: `/assets`,
+          }))
+        );
+      }
+
+      // Sort by relevance (exact matches first, then partial matches)
+      return results.sort((a, b) => {
+        const aExact = a.title.toLowerCase() === query.toLowerCase();
+        const bExact = b.title.toLowerCase() === query.toLowerCase();
+        if (aExact && !bExact) return -1;
+        if (!aExact && bExact) return 1;
+        return 0;
+      });
+    } catch (error) {
+      this.logger.error('Search error:', error);
+      return [];
+    }
   }
 }
