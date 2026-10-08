@@ -1,195 +1,208 @@
-![gigachad grc](https://github.com/user-attachments/assets/22d32df8-2e61-420e-bc98-df7c291ac8a4)
+# @gigachad-grc/shared
 
-# GigaChad GRC
+Shared library used by all GigaChad GRC microservices. Provides the unified Prisma schema, authentication, storage abstraction, event bus, utilities, and common types.
 
-[![License: Elastic-2.0](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE)
-[![Node.js 22.22.3+](https://img.shields.io/badge/Node.js-22.22.3%2B-green.svg)](https://nodejs.org/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
+## Installation
 
-GigaChad GRC is a self-hosted, modular Governance, Risk, and Compliance platform. The repository contains a React frontend, six NestJS API services, PostgreSQL, Redis, Keycloak, RustFS object storage, Traefik, and local monitoring.
+All services reference this package via workspace dependencies:
 
-> The supported evaluation path on this revision is the local Docker Compose stack. The production Compose file and Helm chart are deployment references that require environment-specific review and configuration. Supabase/Vercel, Gitpod, and GitHub Codespaces are not configured deployment targets in this repository.
+```json
+{
+  "dependencies": {
+    "@gigachad-grc/shared": "file:../shared"
+  }
+}
+```
 
-## Quick start
-
-### Prerequisites
-
-- Docker Desktop or Docker Engine with Compose v2
-- 8 GB RAM and 10 GB free disk minimum
-- Git
-
-Node.js is not required for the canonical Docker flow.
+Build the shared library before building any service:
 
 ```bash
-git clone https://github.com/hazaaalghalibi/grc-risk-compliance-platform.git
-cd grc-risk-compliance-platform
-./start.sh
+cd services/shared
+npm run build
 ```
 
-`./start.sh`:
+## Modules
 
-1. verifies Docker;
-2. creates `.env` with generated local credentials when the file does not exist;
-3. creates a self-signed development certificate;
-4. runs `docker compose up -d --build`; and
-5. opens `https://localhost` on macOS.
+### auth
 
-If `.env` already exists, it is reused unchanged. Replace placeholders yourself or remove the file and run `./start.sh` again. Never commit `.env`.
+Authentication and authorization for all services.
 
-The first build can take several minutes. Check progress with:
+| Export                                                 | Purpose                                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `JwtAuthGuard`, `ApiKeyAuthGuard`, `CombinedAuthGuard` | NestJS guards for JWT tokens and API keys                                       |
+| `DevAuthGuard`                                         | Development-mode auth bypass (uses `x-user-id` and `x-organization-id` headers) |
+| `RolesGuard`, `PermissionsGuard`                       | RBAC enforcement guards                                                         |
+| `@Roles()`, `@RequirePermissions()`                    | Decorators for controller-level access control                                  |
+| `@CurrentUser()`, `@OrganizationId()`                  | Parameter decorators to extract user context from requests                      |
+| `KeycloakAdminService`                                 | Keycloak admin API client for user provisioning                                 |
+| `TokenBlacklistService`                                | Token revocation for logout                                                     |
+| `DEV_USER`, `ensureDevUserExists`                      | Dev mode user constants and database seeding                                    |
+
+### cache
+
+In-memory caching with TTL support.
+
+| Export         | Purpose                                         |
+| -------------- | ----------------------------------------------- |
+| `CacheModule`  | NestJS module (import into your service module) |
+| `CacheService` | Injectable service for get/set/delete/clear     |
+| `@Cacheable()` | Method decorator for automatic cache-through    |
+| `CacheKeys`    | Enum of standard cache key prefixes             |
+
+### storage
+
+Abstracted file storage with pluggable backends.
+
+| Export                    | Purpose                                                     |
+| ------------------------- | ----------------------------------------------------------- |
+| `StorageModule`           | NestJS module (import into your service module)             |
+| `STORAGE_PROVIDER`        | Injection token for the active storage provider             |
+| `StorageProvider`         | Interface: `upload()`, `download()`, `delete()`, `getUrl()` |
+| `LocalStorageProvider`    | Local filesystem backend                                    |
+| `S3StorageProvider`       | S3/RustFS/MinIO backend                                     |
+| `AzureBlobStorage`        | Azure Blob Storage backend                                  |
+| `createStorageProvider()` | Factory that reads `STORAGE_TYPE` from env                  |
+
+### events
+
+Cross-service event bus.
+
+| Export          | Purpose                         |
+| --------------- | ------------------------------- |
+| `EventsModule`  | NestJS module                   |
+| `EventBus`      | Interface for publish/subscribe |
+| `RedisEventBus` | Redis-backed implementation     |
+
+### secrets
+
+External secrets management for integration credentials.
+
+| Export            | Purpose                                                                        |
+| ----------------- | ------------------------------------------------------------------------------ |
+| `SecretsModule`   | NestJS module                                                                  |
+| `SecretsService`  | Injectable service for get/set/delete secrets                                  |
+| `SecretsProvider` | Interface for custom providers                                                 |
+| Providers         | `env` (AES-256-GCM encrypted in DB), `infisical` (Infisical cloud/self-hosted) |
+
+### security
+
+Request-level security utilities.
+
+| Export                                    | Purpose                                              |
+| ----------------------------------------- | ---------------------------------------------------- |
+| `safeFetch()`                             | SSRF-protected HTTP fetch (blocks private IPs)       |
+| `RateLimiterGuard`                        | Per-endpoint rate limiting                           |
+| `validatePropertyName()`, `safeOrderBy()` | Prevent injection via user-controlled property names |
+| `deepSanitizeObjectKeys()`                | Sanitize all keys in nested objects                  |
+
+### resilience
+
+Fault tolerance for external service calls.
+
+| Export                        | Purpose                                |
+| ----------------------------- | -------------------------------------- |
+| `CircuitBreaker`              | Circuit breaker pattern implementation |
+| `withRetry()`, `@Retryable()` | Retry with exponential backoff         |
+| `RetryPolicies`               | Pre-configured retry policies          |
+
+### utils
+
+General-purpose utilities used across all services.
+
+| Category           | Exports                                                                                   |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| **Crypto**         | `encrypt`, `decrypt`, `hashPassword`, `verifyPassword`, `generateApiKey`, `generateToken` |
+| **Validation**     | `isValidEmail`, `isValidUrl`, `isValidUuid`, `sanitizeString`, `sanitizeObject`           |
+| **Pagination**     | `createPaginatedResponse`, `parsePaginationParams`, `getPrismaSkipTake`                   |
+| **Sanitization**   | `sanitizeFilename`, `escapeHtml`, `sanitizeInput`                                         |
+| **Error handling** | `handleError`, `withErrorHandling`, `safeAsync`, `retryAsync`, `CatchErrors`              |
+| **Helpers**        | `generateId`, `sleep`, `retry`, `chunk`, `unique`, `groupBy`, `pick`, `omit`, `slugify`   |
+
+### types
+
+Shared TypeScript interfaces and DTOs.
+
+| Export                     | Purpose                                                                |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `UserContext`              | Authenticated user context attached to requests                        |
+| `PaginatedResponse<T>`     | Standard paginated API response shape                                  |
+| `OrganizationScopedEntity` | Base interface for all org-scoped entities                             |
+| `AuditableEntity`          | Base interface with `createdAt`, `updatedAt`, `createdBy`, `updatedBy` |
+| `IntegrationCredentials`   | Typed credentials for each integration type                            |
+| `ConnectorConfig`          | Configuration shape for integration connectors                         |
+| Domain types               | `Dashboard`, `WidgetConfig`, workflow types, Prisma helpers            |
+
+### Other Modules
+
+| Module         | Purpose                                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------------------------- |
+| **logger**     | Structured logging with `getLogger()`, audit log helpers (`logAudit`), PII masking (`maskEmail`, `safeUserId`) |
+| **health**     | Health check module with `PrismaHealthIndicator` and `RedisHealthIndicator`                                    |
+| **filters**    | `GlobalExceptionFilter` that sanitizes error responses in production                                           |
+| **reports**    | PDF report generation (`PDFReportGenerator`) for compliance, risk, and framework reports                       |
+| **search**     | Generic search module that queries across Prisma models                                                        |
+| **watermark**  | PDF watermarking for secure document sharing                                                                   |
+| **decorators** | DTO sanitization decorators (`@SanitizeHtml`, `@SanitizeFileName`)                                             |
+| **middleware** | Express rate limiting middleware                                                                               |
+| **guards**     | Auth-specific rate limiting                                                                                    |
+| **session**    | Redis-backed session store                                                                                     |
+| **services**   | Service registry with circuit breaker state                                                                    |
+
+## Prisma Schema
+
+The unified database schema is at `services/shared/prisma/schema.prisma` from
+the repository root. All services share this schema.
 
 ```bash
-./start.sh status
-./start.sh logs
+# Generate service clients after schema changes
+npm run db:generate
+
+# Synchronize a disposable development database
+npm --workspace @gigachad-grc/controls run prisma:push
 ```
 
-### Access and credentials
+In Docker, the controls entrypoint owns schema synchronization with `prisma db
+push` and then applies the BC/DR SQL migration. Do not run independent
+migrations from every service. The current repository does not yet provide a
+complete versioned migration chain for unattended production upgrades.
 
-Use the gateway URL for the application:
+For schema documentation, see [Database Schema Reference](../../docs/DATABASE_SCHEMA.md).
 
-| Service        | URL                            | Authentication                                              |
-| -------------- | ------------------------------ | ----------------------------------------------------------- |
-| Application    | `https://localhost`            | Click **Dev Login**                                         |
-| Keycloak       | `https://auth.localhost`       | `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` from `.env`    |
-| Grafana        | `https://grafana.localhost`    | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env` |
-| Prometheus     | `https://prometheus.localhost` | None in the local stack                                     |
-| RustFS console | `http://localhost:9001`        | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` from `.env`       |
+## Adding a New Service
 
-The self-signed certificate causes a browser warning on first use. Direct ports such as `http://localhost:3000` and `http://localhost:8080` are loopback-only debugging endpoints. Port 3000 serves the frontend shell without gateway API routing, so it is not the application URL.
+When creating a new microservice that uses the shared library:
 
-Per-service Swagger documentation is available on direct local ports:
+1. Add the dependency: `"@gigachad-grc/shared": "file:../shared"`
+2. Import modules in your NestJS app module:
 
-| Service    | Swagger URL                      |
-| ---------- | -------------------------------- |
-| Controls   | `http://localhost:3001/api/docs` |
-| Frameworks | `http://localhost:3002/api/docs` |
-| Policies   | `http://localhost:3004/api/docs` |
-| TPRM       | `http://localhost:3005/api/docs` |
-| Trust      | `http://localhost:3006/api/docs` |
-| Audit      | `http://localhost:3007/api/docs` |
+```typescript
+import { CacheModule, StorageModule, SecretsModule } from '@gigachad-grc/shared';
 
-The Traefik dashboard is disabled by default. It is not available at port 8090 unless the relevant local environment flags are explicitly enabled.
-
-### Local authentication and mock behavior
-
-The local Compose build intentionally enables development authentication:
-
-- backend services run with `NODE_ENV=development`;
-- the frontend is built with `VITE_ENABLE_DEV_AUTH=true`; and
-- `VITE_ENABLE_DEV_STUBS` remains disabled.
-
-Development authentication is rejected by the backend in production. It is not a production login mechanism.
-
-External integrations do not silently generate sample evidence when credentials are absent. Configure and test each provider before syncing. AI mock output is opt-in in non-production environments with:
-
-```bash
-AI_MOCK_MODE=true
+@Module({
+  imports: [CacheModule, StorageModule, SecretsModule],
+})
+export class AppModule {}
 ```
 
-Without a configured AI provider or that explicit flag, AI availability varies by module and may return an unavailable error. See [Feature and integration availability](#feature-and-integration-availability).
+3. Use guards and decorators in controllers:
 
-### Demo data
+```typescript
+import {
+  JwtAuthGuard,
+  RequirePermissions,
+  CurrentUser,
+  OrganizationId,
+} from '@gigachad-grc/shared';
 
-Demo records are not loaded automatically, and this revision has no active in-app demo-data button. In the local development stack, load them through the controls API:
-
-```bash
-curl -k -X POST https://localhost/api/seed/load-demo
+@Controller('example')
+@UseGuards(JwtAuthGuard)
+export class ExampleController {
+  @Get()
+  @RequirePermissions('example:read')
+  findAll(@OrganizationId() orgId: string, @CurrentUser() user: UserContext) {
+    // orgId and user are extracted from the authenticated request
+  }
+}
 ```
 
-The endpoint is admin-only, idempotence-protected, and disabled when `NODE_ENV=production`. See [Demo and sandbox guide](docs/DEMO.md).
-
-### Common commands
-
-```bash
-./start.sh          # start or rebuild the stack
-./start.sh status   # show container status
-./start.sh logs     # follow logs
-./start.sh stop     # stop containers, preserve data
-./start.sh reset    # remove containers, volumes, and generated .env
-```
-
-`./scripts/start-demo.sh` is a compatibility wrapper around `./start.sh`; it does not maintain a separate Node/Vite launch path.
-
-## Database schema and startup flow
-
-All services use one Prisma schema:
-
-```text
-services/shared/prisma/schema.prisma
-```
-
-The Docker startup flow is:
-
-1. PostgreSQL first-boot scripts create supporting databases, extensions, and schemas.
-2. The controls container entrypoint runs the committed Prisma baseline and forward-only
-   migrations through `deploy/prisma-migrate-safe.sh`.
-3. The same entrypoint applies the idempotent BC/DR SQL migration.
-4. Other services start against that shared database.
-
-Do not run independent per-service migrations or the numbered `database/init/*.sql` files as an
-application migration chain. See [Database schema](docs/DATABASE_SCHEMA.md),
-[Database hardening rollout](docs/DATABASE_HARDENING_ROLLOUT.md), and
-[Upgrade guide](docs/UPGRADE.md).
-
-## Feature and integration availability
-
-The repository includes UI and API implementations for controls, frameworks, evidence, policies, risks, TPRM, trust, audits, training, BC/DR, and administration. Availability still depends on the selected workflow, permissions, storage, and external providers.
-
-Configuration-required capabilities include:
-
-- Keycloak SSO outside local development;
-- SMTP and other outbound notification providers;
-- OpenAI or Anthropic for real AI output;
-- credentials, scopes, enabled upstream APIs, and network egress for connectors;
-- external backup storage for off-host disaster recovery;
-- MCP server credentials and any upstream tools they call. The default Controls image packages
-  and launches the three repository MCP servers; and
-- custom integration code execution, which is disabled unless `ENABLE_CUSTOM_CODE_EXECUTION=true`.
-
-The integration catalog is larger than the set verified end-to-end. A catalog card or factory registration is not a support guarantee. Review [Integration implementation status](docs/INTEGRATION_IMPLEMENTATION_STATUS.md) before relying on a connector.
-
-## Architecture
-
-```text
-Browser
-  |
-  v
-Traefik (HTTPS :443)
-  |-- Frontend
-  |-- Controls API    :3001
-  |-- Frameworks API  :3002
-  |-- Policies API    :3004
-  |-- TPRM API        :3005
-  |-- Trust API       :3006
-  `-- Audit API       :3007
-          |
-          +-- PostgreSQL (one shared Prisma schema)
-          +-- Redis
-          +-- Keycloak
-          `-- RustFS
-```
-
-## Documentation
-
-- [Getting started](GETTING_STARTED.md)
-- [Demo and sandbox](docs/DEMO.md)
-- [Deployment status and options](docs/DEPLOYMENT.md)
-- [Production deployment](docs/PRODUCTION_DEPLOYMENT.md)
-- [Upgrade guide](docs/UPGRADE.md)
-- [Environment configuration](docs/ENV_CONFIGURATION.md)
-- [Development](docs/DEVELOPMENT.md)
-- [API reference](docs/API.md)
-- [Help center content](docs/help/README.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-
-Run documentation validation with:
-
-```bash
-npm run validate:docs
-```
-
-## License
-
-This project is licensed under the [Elastic License 2.0](LICENSE).
-
-You may use it internally, modify it for your own use, and contribute changes. You may not offer it as a hosted or managed service, sell the software, create a competing commercial product, or remove license notices.
+4. Build shared before your service: `cd services/shared && npm run build`
