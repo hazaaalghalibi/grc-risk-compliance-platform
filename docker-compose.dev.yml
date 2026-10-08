@@ -1,0 +1,95 @@
+# Development overrides for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# SECURITY NOTE: security_opt is inherited from docker-compose.yml base file.
+# These overrides only add development-specific configurations.
+
+services:
+  # Development mode for services with hot reload
+  controls:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-dev
+      args:
+        SERVICE: controls
+    volumes:
+      - ./services/controls/src:/app/services/controls/src
+      - ./services/shared/src:/app/services/shared/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+
+  frameworks:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-dev
+      args:
+        SERVICE: frameworks
+    volumes:
+      - ./services/frameworks/src:/app/services/frameworks/src
+      - ./services/shared/src:/app/services/shared/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+
+  policies:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-dev
+      args:
+        SERVICE: policies
+    volumes:
+      - ./services/policies/src:/app/services/policies/src
+      - ./services/shared/src:/app/services/shared/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+
+  tprm:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-dev
+      args:
+        SERVICE: tprm
+    volumes:
+      - ./services/tprm/src:/app/services/tprm/src
+      - ./services/shared/src:/app/services/shared/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+
+  trust:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-dev
+      args:
+        SERVICE: trust
+    volumes:
+      - ./services/trust/src:/app/services/trust/src
+      - ./services/shared/src:/app/services/shared/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+
+  audit:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-dev
+      args:
+        SERVICE: audit
+    volumes:
+      - ./services/audit/src:/app/services/audit/src
+      - ./services/shared/src:/app/services/shared/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.dev
+    volumes:
+      - ./frontend/src:/app/frontend/src
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
