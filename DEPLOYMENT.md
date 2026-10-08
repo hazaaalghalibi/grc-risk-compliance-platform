@@ -1,309 +1,178 @@
-# GigaChad GRC - Deployment Guide
+# Deployment guide
 
-## Overview
+This document describes the deployment artifacts that exist on this revision and their current support level.
 
-GigaChad GRC is designed for **self-hosted deployment** in customer infrastructure. This guide outlines the deployment path from development to production.
+## Deployment status
 
-## Deployment Options
+| Target                    | Repository configuration                            | Status                                                                            |
+| ------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Local Docker Compose      | `docker-compose.yml`, `start.sh`                    | Canonical development/evaluation flow                                             |
+| Production Docker Compose | `docker-compose.prod.yml`, `env.example.production` | Configuration-required reference; do not deploy unreviewed                        |
+| Kubernetes                | `helm/`                                             | Chart present; image registry, secrets, ingress, storage, and validation required |
+| Supabase + Vercel         | No deployable adapter or Vercel configuration       | Unsupported                                                                       |
+| Gitpod                    | No `.gitpod.yml`                                    | Unsupported                                                                       |
+| GitHub Codespaces         | No `.devcontainer/` configuration                   | Unsupported                                                                       |
 
-### Option 1: AWS (Terraform) - **Recommended for Enterprise**
-Full infrastructure-as-code deployment with:
-- ✅ Production-ready architecture
-- ✅ High availability and auto-scaling
-- ✅ Automated backups and disaster recovery
-- ✅ Security best practices built-in
-- ✅ Cost optimization options
+There is no hosted service or one-click cloud deployment in this repository.
 
-**Location**: `terraform/`
+## Local Docker Compose
 
-**Deployment Time**: 20-30 minutes
+Use:
 
-**Prerequisites**:
-- AWS account
-- Terraform installed
-- Docker images in ECR/Docker Hub
-- SSL certificate in AWS Certificate Manager
-
-**Quick Start**:
 ```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
-terraform init
-terraform plan
-terraform apply
+./start.sh
 ```
 
-See [terraform/README.md](terraform/README.md) for detailed instructions.
+The local Compose stack is intentionally a development deployment. It enables development authentication and exposes direct service ports only on loopback.
 
----
+Application URL:
 
-### Option 2: Docker Compose - **Simple Single-Server**
-Lightweight deployment for:
-- Development and testing
-- Small teams (<50 users)
-- Single-server deployments
-- Proof of concept
-
-**Location**: `docker-compose.yml` (current directory)
-
-**Deployment Time**: 5-10 minutes
-
-**Prerequisites**:
-- Linux server with Docker and Docker Compose
-- 4GB+ RAM
-- 50GB+ disk space
-
-**Quick Start**:
-```bash
-# Clone repository
-git clone https://github.com/grcengineering/gigachad-grc.git
-cd gigachad-grc
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your configuration
-
-# Start services
-docker-compose up -d
-
-# Run migrations
-docker-compose exec controls npm run prisma:migrate
-
-# Access at http://localhost
+```text
+https://localhost
 ```
 
----
+See [Getting started](../GETTING_STARTED.md).
 
-## Architecture Components
+## Production Docker Compose
 
-### Required Services
-1. **PostgreSQL** - Primary database
-2. **Redis** - Caching and sessions
-3. **RustFS/S3** - File storage (S3-compatible)
-4. **Keycloak** - Authentication and SSO
+`docker-compose.prod.yml` is a hardened deployment reference, not a complete production platform guarantee. It assumes:
 
-### Application Services
-1. **Controls Service** (Port 3001)
-2. **Frameworks Service** (Port 3002)
-3. **Policies Service** (Port 3004)
-4. **TPRM Service** (Port 3005)
-5. **Trust Service** (Port 3006)
-6. **Audit Service** (Port 3007)
-7. **Frontend** (Port 3000)
+- public DNS for the application, authentication, and storage hosts;
+- ports 80 and 443 reachable for ACME;
+- an operator-managed `.env.prod`;
+- locally built images or a controlled image publication process;
+- backups and restore tests;
+- external monitoring and alerting; and
+- independent security and capacity review.
 
-### Optional Services
-- **Traefik** - API Gateway/Load Balancer
-- **Prometheus** - Metrics collection
-- **Grafana** - Monitoring dashboards
+On this base revision, the production Compose file does not forward every variable consumed by every application path. In particular, operators must verify that controls receives required encryption and module secrets. Use an operator-owned Compose override where necessary; do not assume a value in `.env.prod` is automatically available inside a container.
 
----
+Example override:
 
-## Deployment Sizes and Costs
-
-### Small (Development/Testing)
-**Infrastructure**: Single server or AWS t3.large
-**Users**: 1-10
-**AWS Cost**: ~$200-300/month
-**Hardware**: 4 vCPU, 8GB RAM, 100GB storage
-
-### Medium (Production)
-**Infrastructure**: AWS with Multi-AZ
-**Users**: 10-100
-**AWS Cost**: ~$500-800/month
-**Specs**:
-- RDS db.t3.large
-- ElastiCache cache.t3.medium
-- 2 ECS tasks per service
-
-### Large (Enterprise)
-**Infrastructure**: AWS with auto-scaling
-**Users**: 100-1000+
-**AWS Cost**: ~$1500-2500/month
-**Specs**:
-- RDS db.r6g.xlarge with read replicas
-- ElastiCache cluster
-- Auto-scaling ECS services
-- CloudFront CDN
-
----
-
-## Network Requirements
-
-### Inbound Ports
-- **443/HTTPS** - Application access
-- **80/HTTP** - Redirect to HTTPS (optional)
-
-### Outbound Requirements
-- **443/HTTPS** - External APIs, Keycloak
-- **25/587/SMTP** - Email notifications
-- **DNS/53** - Domain resolution
-
-### Internal Communication
-All services communicate internally - no external exposure required.
-
----
-
-## Security Considerations
-
-### Data Protection
-- ✅ Encryption at rest (RDS, S3)
-- ✅ Encryption in transit (TLS 1.3)
-- ✅ Database credentials in secrets manager
-- ✅ Regular automated backups
-
-### Network Security
-- ✅ VPC with private subnets
-- ✅ Security groups with least privilege
-- ✅ Optional VPN/bastion access
-- ✅ WAF integration available
-
-### Compliance
-- ✅ SOC 2 Type II ready architecture
-- ✅ GDPR compliant data handling
-- ✅ Audit logs for all actions
-- ✅ Data retention policies
-
----
-
-## Monitoring and Observability
-
-### Included Metrics
-- Application health checks
-- Database performance
-- API response times
-- Error rates and logs
-
-### Optional Integrations
-- Datadog
-- New Relic
-- Splunk
-- CloudWatch (AWS)
-- Prometheus + Grafana
-
----
-
-## Backup and Disaster Recovery
-
-### Automated Backups
-- **Database**: Daily automated snapshots (7-day retention)
-- **Files**: S3 versioning and lifecycle policies
-- **Configuration**: Terraform state in S3
-
-### Recovery Time Objectives
-- **RTO**: 1-2 hours (time to restore)
-- **RPO**: 24 hours (maximum data loss)
-
-### Disaster Recovery Plan
-1. Provision infrastructure in new region (Terraform)
-2. Restore RDS from snapshot
-3. Restore S3 files from backup
-4. Update DNS to new region
-5. Validate application functionality
-
----
-
-## Migration from Development to Production
-
-### 1. Prepare Container Images
-```bash
-# Build all services
-docker-compose build
-
-# Tag for production
-docker tag gigachad-grc/controls:latest your-registry/controls:1.0.0
-
-# Push to registry
-docker push your-registry/controls:1.0.0
+```yaml
+services:
+  controls:
+    environment:
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      PHISHING_TRACKING_SECRET: ${PHISHING_TRACKING_SECRET:?PHISHING_TRACKING_SECRET is required}
 ```
 
-### 2. Set Up AWS Infrastructure
+Validate the rendered configuration before building:
+
 ```bash
-cd terraform
-terraform apply
+cp env.example.production .env.prod
+# Fill every required value and add PHISHING_TRACKING_SECRET.
+
+docker compose \
+  -f docker-compose.prod.yml \
+  --env-file .env.prod \
+  config
+
+npm run validate:production:strict
 ```
 
-### 3. Deploy Database Schema
+The production validator is a configuration aid, not a certification that the deployment is safe or available.
+
+Start only after resolving all validation findings:
+
 ```bash
-# SSH to ECS task or use Session Manager
-npm run prisma:migrate
+docker compose \
+  -f docker-compose.prod.yml \
+  --env-file .env.prod \
+  up -d --build
 ```
 
-### 4. Configure DNS
-Point your domain to the load balancer DNS from Terraform outputs.
+See [Production deployment](PRODUCTION_DEPLOYMENT.md) for prerequisites and known limitations.
 
-### 5. Set Up Keycloak
-Create realm, client, and users according to docs/keycloak-setup.md.
+## Domains and routing
 
-### 6. Validate Deployment
-Run smoke tests and monitor logs for errors.
+The production Compose file expects:
 
----
+- `${APP_DOMAIN}` for the application;
+- `${KEYCLOAK_HOSTNAME}` for Keycloak;
+- `storage.${APP_DOMAIN}` for the S3 API; and
+- `console.storage.${APP_DOMAIN}` for the RustFS console.
 
-## Ongoing Maintenance
+Traefik requests Let's Encrypt certificates using `${ACME_EMAIL}`. DNS must resolve before startup.
 
-### Weekly
-- Review application logs
-- Check error rates
-- Monitor resource utilization
+The frontend uses same-origin API routes. Do not deploy it independently as static files unless you also provide equivalent API routing, authentication, and all six backend services.
 
-### Monthly
-- Review and apply security patches
-- Analyze costs and optimize
-- Test backup restoration
-- Review user feedback
+## Database ownership
 
-### Quarterly
-- Perform security audit
-- Update dependencies
-- Capacity planning review
-- Disaster recovery drill
+All application services use one schema file:
 
----
+```text
+services/shared/prisma/schema.prisma
+```
 
-## Getting Help
+Current container startup behavior:
 
-### Documentation
-- **Architecture**: docs/architecture.md
-- **API Reference**: docs/api/
-- **User Guide**: docs/user-guide.md
-- **Admin Guide**: docs/admin-guide.md
+1. PostgreSQL first-boot scripts create supporting databases, extensions, and schemas.
+2. The controls entrypoint runs `deploy/prisma-migrate-safe.sh` to establish the baseline and apply
+   committed forward-only migrations.
+3. The controls entrypoint applies the idempotent BC/DR migration.
+4. All services use the resulting shared database.
 
-### Support Channels
-- **Email**: support@example.com
-- **GitHub Issues**: github.com/grcengineering/gigachad-grc/issues
-- **Community Slack**: gigachad-grc.slack.com
+Only the controls container should own migrations. Do not run `prisma migrate deploy` from every
+service and do not apply every numbered `database/init` SQL file in sequence. Back up and rehearse
+upgrades using [Database hardening rollout](DATABASE_HARDENING_ROLLOUT.md).
 
-### Professional Services
-- **Implementation**: Custom deployment assistance
-- **Training**: Admin and user training sessions
-- **Consulting**: Architecture review and optimization
+## External infrastructure
 
----
+The Compose services are written for the included PostgreSQL, Redis, Keycloak, and RustFS hostnames. Replacing them with managed services requires a reviewed override that updates connection URLs, TLS behavior, health dependencies, credentials, and network policy.
 
-## Roadmap
+Supabase is not a drop-in replacement for the full stack: this repository has no Supabase storage adapter, RLS policy set, serverless API layer, or Vercel routing configuration.
 
-### Current Status: ✅ Production Ready (v1.0)
-- Core GRC functionality
-- Multi-tenant architecture
-- Self-hosted deployment via Terraform
+## Kubernetes
 
-### Upcoming (Q2 2024)
-- Kubernetes/Helm deployment option
-- Azure and GCP Terraform modules
-- Enhanced reporting and dashboards
-- Mobile app
+The Helm chart exists under `helm/`, but installation requires:
 
-### Future (Q3-Q4 2024)
-- AI-powered risk assessment
-- Third-party integrations (Jira, ServiceNow)
-- Managed SaaS offering
-- Advanced workflow automation
+- application images in an accessible registry;
+- a reviewed `values.yaml`;
+- Kubernetes secrets or an external secrets operator;
+- ingress and TLS;
+- persistent volumes or external data services;
+- network policies appropriate to the cluster; and
+- chart rendering and upgrade tests.
 
----
+Render before installing:
 
-## License
+```bash
+helm lint ./helm
+helm template gigachad-grc ./helm -f my-values.yaml > rendered.yaml
+```
 
-Copyright © 2024 GigaChad GRC. All rights reserved.
+Do not use chart defaults as production credentials.
 
-This software is provided for self-hosted deployment only. See LICENSE.md for terms.
+## Provider-dependent features
+
+Deployment alone does not enable:
+
+- OpenAI or Anthropic;
+- SMTP delivery;
+- third-party connector APIs;
+- remote backup storage;
+- Sentry or another external APM service;
+- MCP servers; or
+- custom integration code execution.
+
+Each requires separate credentials, least-privilege scopes, outbound network access, and operational monitoring.
+
+## Backups
+
+The production Compose file includes a backup scheduler. Its network-level PostgreSQL, Redis, and S3 operations require valid credentials and durable `grc_backups` storage.
+
+For disaster recovery:
+
+1. configure off-host backup storage;
+2. run `deploy/backup.sh`;
+3. restore into an isolated environment with `deploy/restore.sh`;
+4. verify database, object storage, login, and representative records; and
+5. record recovery time and recovery point results.
+
+A successful backup command is not proof of recoverability.
+
+## Upgrade and rollback
+
+Follow [Upgrade guide](UPGRADE.md). Back up before rebuilding the controls container because its entrypoint synchronizes the shared schema during startup.
