@@ -1,0 +1,240 @@
+import { useState, useCallback } from 'react';
+import {
+  PlayIcon,
+  DocumentDuplicateIcon,
+  ArrowPathIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+  XCircleIcon,
+} from '@heroicons/react/24/outline';
+import clsx from 'clsx';
+import { Button, Textarea } from '@/components/ui';
+
+interface ValidationResult {
+  valid: boolean;
+  errors?: string[];
+  warnings?: string[];
+}
+
+interface Props {
+  code: string;
+  onChange: (code: string) => void;
+  onValidate: (code: string) => Promise<ValidationResult>;
+  onTest: () => void;
+  isTestLoading?: boolean;
+  testResult?: { success: boolean; message: string; data?: any };
+}
+
+const DEFAULT_TEMPLATE = `/**
+ * Custom Integration Code
+ * 
+ * Available APIs:
+ * - fetch(url, options): Make HTTP requests (same as browser fetch)
+ * - console.log(...args): Log messages
+ * - context.baseUrl: The configured base URL
+ * - context.auth.headers: Pre-configured authentication headers
+ * 
+ * Return format:
+ * {
+ *   evidence: [
+ *     {
+ *       title: string,
+ *       description: string,
+ *       data: any,
+ *       type?: string, // 'screenshot', 'document', 'log', 'config', 'report'
+ *     }
+ *   ]
+ * }
+ */
+
+async function sync(context) {
+  const { baseUrl, auth } = context;
+  
+  // Example: Fetch data from an API
+  const response = await fetch(\`\${baseUrl}/api/data\`, {
+    headers: {
+      ...auth.headers,
+      'Content-Type': 'application/json',
+    },
+  });
+  
+  if (!response.ok) {
+    throw new Error(\`API request failed: \${response.status}\`);
+  }
+  
+  const data = await response.json();
+  
+  // Return evidence to be created
+  return {
+    evidence: [
+      {
+        title: \`API Data - \${new Date().toLocaleDateString()}\`,
+        description: 'Data collected from custom API',
+        data: data,
+        type: 'automated',
+      },
+    ],
+  };
+}
+
+// Export the sync function
+module.exports = { sync };
+`;
+
+export default function CodeEditor({
+  code,
+  onChange,
+  onValidate,
+  onTest,
+  isTestLoading,
+  testResult,
+}: Props) {
+  const [validation, setValidation] = useState<ValidationResult | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+
+  const handleValidate = useCallback(async () => {
+    setIsValidating(true);
+    try {
+      const result = await onValidate(code);
+      setValidation(result);
+    } catch (error: any) {
+      setValidation({ valid: false, errors: [error.message] });
+    } finally {
+      setIsValidating(false);
+    }
+  }, [code, onValidate]);
+
+  const handleReset = () => {
+    onChange(DEFAULT_TEMPLATE);
+    setValidation(null);
+  };
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(code);
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-4 py-2 bg-surface-100/50 border-b border-surface-300">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleValidate}
+            loading={isValidating}
+            leftIcon={!isValidating ? <CheckCircleIcon className="w-4 h-4" /> : undefined}
+          >
+            Validate
+          </Button>
+          <Button
+            size="sm"
+            onClick={onTest}
+            loading={isTestLoading}
+            leftIcon={!isTestLoading ? <PlayIcon className="w-4 h-4" /> : undefined}
+          >
+            Test Run
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopy}
+            className="p-2 text-surface-600 hover:text-surface-800"
+            title="Copy code"
+          >
+            <DocumentDuplicateIcon className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleReset}
+            className="p-2 text-surface-600 hover:text-surface-800"
+            title="Reset to template"
+          >
+            <ArrowPathIcon className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Validation/Test Results */}
+      {(validation || testResult) && (
+        <div className="px-4 py-2 bg-surface-100/30 border-b border-surface-300">
+          {validation && (
+            <div
+              className={clsx(
+                'flex items-start gap-2 text-sm',
+                validation.valid ? 'text-emerald-700' : 'text-red-600'
+              )}
+            >
+              {validation.valid ? (
+                <CheckCircleIcon className="w-5 h-5 flex-shrink-0" />
+              ) : (
+                <XCircleIcon className="w-5 h-5 flex-shrink-0" />
+              )}
+              <div>
+                {validation.valid ? (
+                  <span>Code is valid</span>
+                ) : (
+                  <div>
+                    {validation.errors?.map((err, i) => (
+                      <div key={i}>{err}</div>
+                    ))}
+                  </div>
+                )}
+                {validation.warnings && validation.warnings.length > 0 && (
+                  <div className="text-yellow-700 mt-1 flex items-start gap-1">
+                    <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div>
+                      {validation.warnings.map((warn, i) => (
+                        <div key={i}>{warn}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {testResult && (
+            <div
+              className={clsx(
+                'flex items-start gap-2 text-sm mt-2',
+                testResult.success ? 'text-emerald-700' : 'text-red-600'
+              )}
+            >
+              {testResult.success ? (
+                <CheckCircleIcon className="w-5 h-5 flex-shrink-0" />
+              ) : (
+                <XCircleIcon className="w-5 h-5 flex-shrink-0" />
+              )}
+              <div>
+                <div>{testResult.message}</div>
+                {testResult.data && (
+                  <pre className="mt-2 p-2 bg-white rounded text-xs text-surface-700 overflow-auto max-h-32">
+                    {JSON.stringify(testResult.data, null, 2)}
+                  </pre>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Editor */}
+      <div className="flex-1 min-h-0 p-3 bg-surface-950">
+        <Textarea
+          aria-label="Custom integration JavaScript"
+          value={code}
+          onChange={(event) => onChange(event.target.value)}
+          spellCheck={false}
+          className="h-full min-h-[28rem] resize-none font-mono text-sm leading-[22px] bg-surface-950 text-surface-100 border-surface-700"
+        />
+      </div>
+
+      {/* Help Text */}
+      <div className="px-4 py-2 bg-surface-100/30 border-t border-surface-300 text-xs text-surface-500">
+        <strong>Tip:</strong> The <code className="bg-surface-200 px-1 rounded">sync(context)</code>{' '}
+        function is called when syncing. Return an object with an{' '}
+        <code className="bg-surface-200 px-1 rounded">evidence</code> array containing data to save.
+      </div>
+    </div>
+  );
+}
