@@ -1,0 +1,474 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '22.22.3'
+
+permissions:
+  contents: read
+
+jobs:
+  documentation:
+    name: Documentation Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate documentation links and commands
+        run: npm run validate:docs
+
+  # Frontend validation
+  frontend:
+    name: Frontend Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install all dependencies
+        run: npm ci --ignore-scripts --workspace @gigachad-grc/frontend --include-workspace-root
+
+      - name: TypeScript compilation check
+        run: npx tsc --noEmit
+        working-directory: frontend
+
+      - name: ESLint validation
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Verify routing configuration
+        run: node --test tests/routing-config.test.mjs tests/framework-routing-config.test.mjs
+
+      - name: Run unit tests
+        run: npm test -- --reporter=verbose
+        working-directory: frontend
+
+      - name: Build check
+        run: npm run build
+        working-directory: frontend
+
+  # Backend services validation
+  backend:
+    name: Backend Validation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [shared, controls, frameworks, policies, tprm, trust, audit]
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install all dependencies
+        run: |
+          if [ "${{ matrix.service }}" = "shared" ]; then
+            npm ci --ignore-scripts --workspace @gigachad-grc/shared --include-workspace-root
+          else
+            npm ci --ignore-scripts \
+              --workspace "@gigachad-grc/${{ matrix.service }}" \
+              --workspace @gigachad-grc/shared \
+              --include-workspace-root
+          fi
+
+      # Lifecycle scripts are disabled globally via .npmrc as a supply-chain
+      # defense. The Prisma client is required for the per-service TS
+      # compilation below, so generate it explicitly here.
+      - name: Generate Prisma client
+        if: matrix.service != 'shared'
+        run: npm run prisma:generate --workspace "@gigachad-grc/${{ matrix.service }}"
+
+      - name: Build shared module
+        run: npm run build --workspace=@gigachad-grc/shared
+
+      - name: TypeScript compilation check
+        run: npx tsc --noEmit
+        working-directory: services/${{ matrix.service }}
+
+      - name: ESLint validation
+        run: npm run lint --if-present
+        working-directory: services/${{ matrix.service }}
+
+      - name: Run unit tests
+        run: npm test --if-present -- --runInBand
+        working-directory: services/${{ matrix.service }}
+
+  # Security scanning - BLOCKING: PRs cannot merge with security issues
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --omit=dev
+
+      - name: Run npm audit (BLOCKING, production deps)
+        # Blocking gate scoped to production dependencies — what actually ships
+        # in the deployed containers. Dev-only build/test tooling is audited
+        # below as advisory (non-blocking).
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Run npm audit on dev dependencies (advisory)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      - name: Verify npm package signatures (BLOCKING)
+        # Checks sigstore attestations for installed packages. Catches
+        # package takeovers where a malicious version is published without
+        # a valid signature from the maintainer's published key. Skips
+        # gracefully for packages that have not yet enabled attestations.
+        run: npm audit signatures
+
+      - name: Run Trivy vulnerability scanner (BLOCKING)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'vuln'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1' # BLOCKING: Fail on HIGH/CRITICAL vulnerabilities
+          format: 'table'
+          ignore-unfixed: true # Only fail on vulnerabilities with available fixes
+          cache: false # Fresh DB each run; a stale cached DB causes false positives
+
+  # Docker build check
+  docker:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [controls, frameworks, policies, tprm, trust, audit]
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build Docker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          push: false
+          tags: grc-${{ matrix.service }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          DOCKER_BUILDKIT: 1
+
+  deployment-contracts:
+    name: Production Deployment Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Render production Compose configuration
+        env:
+          POSTGRES_USER: grc
+          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_DB: gigachad_grc
+          REDIS_PASSWORD: ci-redis-password
+          MINIO_ROOT_USER: rustfsadmin
+          MINIO_ROOT_PASSWORD: ci-rustfs-password
+          KEYCLOAK_ADMIN: admin
+          KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-password
+          KEYCLOAK_HOSTNAME: auth.example.test
+          KEYCLOAK_REALM: gigachad-grc
+          APP_DOMAIN: grc.example.test
+          ACME_EMAIL: security@example.test
+          GRC_SERVICES_SECRET: ci-services-secret-not-real
+          GRC_MCP_SECRET: ci-mcp-secret-not-real
+          GRAFANA_ADMIN_USER: admin
+          GRAFANA_ADMIN_PASSWORD: ci-grafana-password
+          ENCRYPTION_KEY: ci-fixture-encryption-key-not-a-real-secret-padding-padding
+          JWT_SECRET: ci-jwt-secret-not-real-padding-padding-padding
+          SESSION_SECRET: ci-session-secret-not-real-padding-padding
+          PHISHING_TRACKING_SECRET: ci-phishing-secret-not-real-padding
+        run: docker compose -f docker-compose.prod.yml config --quiet
+
+      - name: Render development override
+        env:
+          POSTGRES_USER: grc
+          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_DB: gigachad_grc
+          REDIS_PASSWORD: ci-redis-password
+          MINIO_ROOT_USER: rustfsadmin
+          MINIO_ROOT_PASSWORD: ci-rustfs-password
+          KEYCLOAK_ADMIN: admin
+          KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-password
+          GRAFANA_ADMIN_USER: admin
+          GRAFANA_ADMIN_PASSWORD: ci-grafana-password
+          ENCRYPTION_KEY: ci-fixture-encryption-key-not-a-real-secret-padding-padding
+          PHISHING_TRACKING_SECRET: ci-phishing-secret-not-real-padding
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
+
+      - name: Lint Helm chart
+        run: |
+          docker run --rm -v "$PWD:/apps" alpine/helm:3.19.0 lint /apps/helm \
+            --set controls.image.tag=test \
+            --set frameworks.image.tag=test \
+            --set policies.image.tag=test \
+            --set tprm.image.tag=test \
+            --set trust.image.tag=test \
+            --set audit.image.tag=test \
+            --set frontend.image.tag=test \
+            --set rustfs.image.tag=test \
+            --set postgresql.auth.password=test-postgres \
+            --set redis.auth.password=test-redis \
+            --set rustfs.auth.rootPassword=test-rustfs \
+            --set keycloak.auth.adminPassword=test-keycloak
+
+      - name: Validate restore script syntax
+        run: bash -n deploy/restore.sh
+
+  # Blocking clean-stack checks for routing, persistence, tenant isolation,
+  # and role-based API enforcement.
+  clean-stack-gate:
+    name: Clean Stack API, Tenant & RBAC Gate
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    timeout-minutes: 45
+
+    env:
+      # Throwaway secrets for the ephemeral CI stack. These are NOT real
+      # credentials — they only need to satisfy docker-compose's required-var
+      # checks (${VAR:?...}). Dependencies come up fresh and are torn down at
+      # the end of the job.
+      POSTGRES_USER: grc
+      POSTGRES_PASSWORD: ci-postgres-password
+      POSTGRES_DB: gigachad_grc
+      REDIS_PASSWORD: ci-redis-password
+      MINIO_ROOT_USER: rustfsadmin
+      MINIO_ROOT_PASSWORD: ci-minio-password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-password
+      GRAFANA_ADMIN_USER: admin
+      GRAFANA_ADMIN_PASSWORD: ci-grafana-password
+      # CI-only fixture. The controls service requires length >= 32 and passes
+      # this through scrypt as a passphrase, so any non-empty 32+ char string
+      # works. Avoid hex/random-looking strings here — gitleaks' encryption-key
+      # rule matches /ENCRYPTION_KEY['"=:\s]+['"][0-9a-f]{32,}['"]/ and would
+      # flag this even though it's an obvious fixture.
+      ENCRYPTION_KEY: 'ci-fixture-encryption-key-not-a-real-secret-padding-padding'
+      PHISHING_TRACKING_SECRET: ci-phishing-tracking-secret
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --workspace @gigachad-grc/frontend --include-workspace-root
+
+      - name: Generate ephemeral TLS certificate
+        run: |
+          mkdir -p gateway/certs
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout gateway/certs/dev-localhost.key \
+            -out gateway/certs/dev-localhost.crt \
+            -days 1 \
+            -subj '/CN=localhost' \
+            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'
+
+      - name: Bring up required clean stack
+        # Plain `up -d` (no --wait). The polling step below handles
+        # readiness gating with a 5 min budget. We don't use --wait
+        # because the frontend's nginx healthcheck has a tight retry
+        # budget on a cold runner.
+        run: docker compose up -d --build traefik controls frontend
+
+      - name: Diagnose compose startup failure
+        if: failure()
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail=300 postgres || true
+
+      - name: Poll backend + frontend readiness (5 min max)
+        run: |
+          set -e
+          deadline=$(( $(date +%s) + 300 ))
+          ready_controls=0
+          ready_frontend=0
+          ready_gateway=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            frontend_code="ready"
+            if [ "$ready_controls" -eq 0 ] && \
+               curl -sf -o /dev/null http://127.0.0.1:3001/health; then
+              echo "controls service ready"
+              ready_controls=1
+            fi
+            if [ "$ready_frontend" -eq 0 ]; then
+              # Frontend can legitimately return non-2xx while booting auth/routes.
+              # Treat any HTTP response as ready; only reject connection refused.
+              frontend_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3000/ || true)"
+              if [ "$frontend_code" != "000" ]; then
+                echo "frontend ready (http $frontend_code)"
+                ready_frontend=1
+              fi
+            fi
+            if [ "$ready_gateway" -eq 0 ] && \
+               curl -kfsS -o /dev/null --max-time 5 https://127.0.0.1/api/seed/status; then
+              echo "gateway route ready"
+              ready_gateway=1
+            fi
+            if [ "$ready_controls" -eq 1 ] && [ "$ready_frontend" -eq 1 ] && [ "$ready_gateway" -eq 1 ]; then
+              echo "All endpoints healthy"
+              exit 0
+            fi
+            echo "wait: controls=$ready_controls frontend=$ready_frontend gateway=$ready_gateway frontend_http=$frontend_code"
+            sleep 5
+          done
+          echo "::error::Stack did not become ready within 5 minutes"
+          docker compose ps
+          docker compose logs --tail=200
+          exit 1
+
+      - name: Seed demo data
+        run: |
+          curl -fsS -X POST http://127.0.0.1:3001/api/seed/load-demo \
+            -H 'x-dev-user-id: 8f88a42b-e799-455c-b68a-308d7d2e9aa4' \
+            --max-time 180
+
+      - name: Install Playwright Chromium
+        # GitHub's Ubuntu image already includes Chromium's system libraries.
+        # Avoid apt font downloads, which can exhaust the job timeout.
+        run: npx playwright install chromium
+
+      - name: Run clean-stack release gate
+        run: npx playwright test --config=playwright.clean-stack.config.ts
+
+      - name: Run full browser functionality suite
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+          PLAYWRIGHT_IGNORE_HTTPS_ERRORS: 'true'
+        run: npx playwright test --project=chromium --grep-invert "clean stack release gate"
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+      - name: Upload Playwright test-results
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-test-results
+          path: test-results
+          retention-days: 7
+
+      - name: Tear down dev stack
+        if: always()
+        # -v drops the named volumes too so the runner is clean even on
+        # retry / re-run. The compose stack is ephemeral; nothing here is
+        # worth preserving.
+        run: docker compose down -v --remove-orphans
+
+  # Final status check
+  status:
+    name: Validation Status
+    runs-on: ubuntu-latest
+    needs: [documentation, frontend, backend, security, docker, deployment-contracts, clean-stack-gate]
+    if: always()
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check all jobs status
+        run: |
+          if [ "${{ needs.documentation.result }}" != "success" ] || \
+             [ "${{ needs.frontend.result }}" != "success" ] || \
+             [ "${{ needs.backend.result }}" != "success" ] || \
+             [ "${{ needs.security.result }}" != "success" ] || \
+             [ "${{ needs.docker.result }}" != "success" ] || \
+             [ "${{ needs.deployment-contracts.result }}" != "success" ] || \
+             [ "${{ needs.clean-stack-gate.result }}" != "success" ]; then
+            echo "Required checks failed"
+            exit 1
+          fi
+          echo "All required checks passed (frontend, backend, security, docker, deployment, clean-stack)"
